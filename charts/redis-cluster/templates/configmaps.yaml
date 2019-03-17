@@ -1,0 +1,58 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rediscluster-cfg
+  namespace: {{ .Values.namespace | default "default" }}
+  labels:
+    chart: {{ template "rediscluster.chart" . }}
+data:
+  rediscluster.init.sh: |
+    #!/bin/sh
+
+    redis-server /conf/redis.conf
+    redis_svc={{ template "rediscluster.fullname" . }}-svc
+
+    last_ss="redis-ss-{{ sub .Values.replicaCount 1 }}"
+    redis_app_name="redis-node"
+
+    until [[ "$HOSTNAME" != "" ]]; do
+      echo "Waiting for hostname configuration"
+      sleep 1
+    done
+
+    if [[ "${HOSTNAME}" == "$last_ss" ]]; then
+
+      echo $HOSTNAME
+      until ping -c 1 $redis_svc; do
+        echo "Waiting for service availability..."
+        sleep 1
+      done
+
+      len="0"
+      until [ $len -eq {{ .Values.replicaCount }} ]; do
+        echo "Waiting for statefulset spinup..."
+        sleep 1
+        resp=$(curl -s --cacert /var/run/secrets/kubernetes.io/serviceaccount/ca.crt -H "Authorization: Bearer $(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" https://kubernetes.default/api/v1/namespaces/{{ .Values.namespace | default "default" }}/pods)
+        len=$(echo $resp | jq --arg redis_app_name "$redis_app_name" '[.items[] | select(.metadata.labels.app==$redis_app_name) | .status.podIP | select(. != null)] | length')
+      done
+      echo $len
+
+      podIPs=$(echo $resp | jq --arg redis_app_name "$redis_app_name" '.items[] | select(.metadata.labels.app==$redis_app_name) | .status.podIP | select(. != null)')
+      podIPs=$(echo $podIPs | sed -e 's/"//g' -e 's/\([0-9]\{1,3\}\.\)\{3\}[0-9]\{1,3\}/&:6379/g')
+      echo $podIPs
+      echo 'yes' | redis-cli --cluster create $podIPs --cluster-replicas {{ .Values.replicaTolerance }}
+    fi
+    ln -sf /dev/stdout /var/log/redis.log && ln -sf /dev/stderr /var/log/redis_err.log
+    tail -f /var/log/redis.log
+  rediscluster.conf: |
+    cluster-enabled yes
+    cluster-require-full-coverage no
+    cluster-node-timeout 15000
+    cluster-config-file /data/nodes.conf
+    cluster-migration-barrier 1
+    appendonly yes
+    protected-mode no
+    daemonize yes
+    logfile /var/log/redis.log
+    maxmemory-policy allkeys-lfu

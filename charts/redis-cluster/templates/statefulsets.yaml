@@ -1,0 +1,62 @@
+---
+apiVersion: apps/v1beta1
+kind: StatefulSet
+metadata:
+  name: redis-ss
+  namespace: {{ .Values.namespace | default "default" }}
+  labels:
+    chart: {{ template "rediscluster.chart" . }}
+spec:
+  selector:
+    matchLabels:
+      app: redis-node
+      release: {{ .Release.Name }}
+  replicas: {{ .Values.replicaCount }}
+  serviceName: {{ template "rediscluster.fullname" . }}-svc
+  template:
+    metadata:
+      labels:
+        app: redis-node
+        release: {{ .Release.Name }}
+    spec:
+      serviceAccountName: {{ .Values.serviceAccountName }}
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          name: {{ .Chart.Name }}
+          ports:
+            - containerPort: {{ .Values.service.clusterInternalPort }}
+              name: {{ template "rediscluster.client.port" . }}
+            - containerPort: {{ .Values.service.clusterInternalGossipPort }}
+              name: {{ template "rediscluster.gossip.port" . }}
+          command:
+            - sh
+            - /scripts/init.sh
+          volumeMounts:
+            - name: redis-conf
+              mountPath: /conf/redis.conf
+              subPath: rediscluster.conf
+            - name: rediscluster-data-pvc
+              mountPath: /data
+            - name: redis-conf
+              mountPath: /scripts/init.sh
+              subPath: rediscluster.init.sh
+      terminationGracePeriodSeconds: 10
+      volumes:
+        - name: redis-conf
+          configMap:
+            name: rediscluster-cfg
+  volumeClaimTemplates:
+    - metadata:
+        name: rediscluster-data-pvc
+        namespace: {{ .Values.namespace | default "default" }}
+        labels:
+          app: redis-node
+          release: {{ .Release.Name }}
+      spec:
+        accessModes:
+          - {{ .Values.persistence.accessMode | quote }}
+        resources:
+          requests:
+            storage: {{ .Values.persistence.size | quote }}
